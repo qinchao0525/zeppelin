@@ -24,6 +24,7 @@ import java.nio.file.Files
 import java.util.Properties
 import java.util.concurrent.TimeUnit
 import java.util.jar.JarFile
+import java.util.regex.Pattern
 
 import org.apache.commons.lang3.StringUtils
 import org.apache.commons.lang3.exception.ExceptionUtils
@@ -47,6 +48,7 @@ import org.apache.flink.table.functions.{AggregateFunction, ScalarFunction, Tabl
 import org.apache.flink.table.module.ModuleManager
 import org.apache.flink.table.module.hive.HiveModule
 import org.apache.flink.yarn.cli.FlinkYarnSessionCli
+import org.apache.flink.yarn.executors.YarnSessionClusterExecutor
 import org.apache.zeppelin.flink.util.DependencyUtils
 import org.apache.zeppelin.interpreter.thrift.InterpreterCompletion
 import org.apache.zeppelin.interpreter.util.InterpreterOutputStream
@@ -223,6 +225,10 @@ class FlinkScalaInterpreter(val properties: Properties) {
         .copy(port = Some(Integer.parseInt(port)))
     }
 
+    if (config.executionMode == ExecutionMode.YARN) {
+      // workaround for FLINK-17788, otherwise it won't work with flink 1.10.1 which has been released.
+      configuration.set(DeploymentOptions.TARGET, YarnSessionClusterExecutor.NAME)
+    }
     config
   }
 
@@ -259,6 +265,11 @@ class FlinkScalaInterpreter(val properties: Properties) {
             LOGGER.info("Starting FlinkCluster in yarn mode")
             if (properties.getProperty("flink.webui.yarn.useProxy", "false").toBoolean) {
               this.jmWebUrl = HadoopUtils.getYarnAppTrackingUrl(clusterClient)
+              // for some cloud vender, the yarn address may be mapped to some other address.
+              val yarnAddress = properties.getProperty("flink.webui.yarn.address")
+              if (!StringUtils.isBlank(yarnAddress)) {
+                this.jmWebUrl = replaceYarnAddress(this.jmWebUrl, yarnAddress)
+              }
             } else {
               this.jmWebUrl = clusterClient.getWebInterfaceURL
             }
@@ -455,7 +466,9 @@ class FlinkScalaInterpreter(val properties: Properties) {
     this.btenv.registerCatalog("hive", hiveCatalog)
     this.btenv.useCatalog("hive")
     this.btenv.useDatabase(database)
-    this.btenv.loadModule("hive", new HiveModule(hiveVersion))
+    if (properties.getProperty("zeppelin.flink.module.enableHive", "false").toBoolean) {
+      this.btenv.loadModule("hive", new HiveModule(hiveVersion))
+    }
   }
 
   private def loadUDFJar(jar: String): Unit = {
@@ -831,6 +844,12 @@ class FlinkScalaInterpreter(val properties: Properties) {
         }
       }
     }
+  }
+
+  def replaceYarnAddress(webURL: String, yarnAddress: String): String = {
+    val pattern = "(https?://.*:\\d+)(.*)".r
+    val pattern(prefix, remaining) = webURL
+    yarnAddress + remaining
   }
 }
 
